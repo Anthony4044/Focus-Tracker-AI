@@ -1,7 +1,3 @@
-// FaceMesh3D component
-// - Captures webcam, runs TFJS FaceMesh, and renders 3D landmarks via Three.js
-// - Uses WebGazer to infer whether the gaze is on-screen or off-screen
-// - Shows overlays for status, FPS, and a face-count banner at the top
 import React, { useEffect, useRef, useState } from "react";
 import * as tf from "@tensorflow/tfjs";
 import "@tensorflow/tfjs-backend-webgl";
@@ -9,121 +5,244 @@ import * as faceLandmarksDetection from "@tensorflow-models/face-landmarks-detec
 import * as THREE from "three";
 
 export default function FaceMesh3D() {
-  // DOM refs: outer container (for sizing/overlays) and <video> (webcam).
   const containerRef = useRef(null);
   const videoRef = useRef(null);
-  // Three.js renderer/scene/camera reused across frames to avoid GC churn.
+
   const rendererRef = useRef(null);
   const sceneRef = useRef(null);
   const cameraRef = useRef(null);
-  // Geometry handles for landmarks:
-  // - pointsRef: a Points cloud of all landmark vertices
-  // - linesRef: optional K-nearest neighbor connections (simple wireframe)
   const pointsRef = useRef(null);
   const linesRef = useRef(null);
-  // Face model + API mode (detector vs legacy package)
+
   const modelRef = useRef(null);
   const apiRef = useRef("none");
-  // requestAnimationFrame id, used to cancel on unmount
   const rafRef = useRef(0);
-  // UI state and runtime metrics
+
   const [status, setStatus] = useState("Initializing...");
   const [facesCount, setFacesCount] = useState(0);
   const [fps, setFps] = useState(0);
-  const [offScreen, setOffScreen] = useState(false); // true when gaze is off-screen for a short time
-  const [gazeXY, setGazeXY] = useState(null);        // latest gaze pixel (rounded), if available
-  // WebGazer instance + debug/calibration state
+  const [offScreen, setOffScreen] = useState(false);
+  const [gazeXY, setGazeXY] = useState(null);
+
   const webgazerRef = useRef(null);
   const [showGazeDot, setShowGazeDot] = useState(false);
-  // Simple 9-point calibration overlay (user clicks each dot while looking at it)
+
   const [calibrating, setCalibrating] = useState(false);
   const CALIB_POINTS = [
-    [0.1, 0.1], [0.5, 0.1], [0.9, 0.1],
-    [0.1, 0.5], [0.5, 0.5], [0.9, 0.5],
-    [0.1, 0.9], [0.5, 0.9], [0.9, 0.9],
+    [0.1, 0.1],
+    [0.5, 0.1],
+    [0.9, 0.1],
+    [0.1, 0.5],
+    [0.5, 0.5],
+    [0.9, 0.5],
+    [0.1, 0.9],
+    [0.5, 0.9],
+    [0.9, 0.9],
   ];
   const CALIBRATION_PER_POINT = 5;
-  const [calibrationCounts, setCalibrationCounts] = useState(() => new Array(9).fill(0));
+  const [calibrationCounts, setCalibrationCounts] = useState(
+    () => new Array(9).fill(0)
+  );
 
-  // Visualization and performance tuning
-  // DRAW_LINES: toggles K-nearest neighbor connections between landmarks (wireframe).
-  // CONNECT_K: number of neighbors per point (higher = denser mesh and more CPU).
-  // LINES_UPDATE_EVERY_N_FRAMES: recompute lines every N frames to save CPU.
-  // DEPTH_SCALE: multiplies the model’s Z so depth is visible with an ortho camera.
-  const DRAW_LINES = true; // connect nearest neighbors
-  const CONNECT_K = 2; // neighbors per point
-  const LINES_UPDATE_EVERY_N_FRAMES = 2; // throttle line recompute
-  const DEPTH_SCALE = 50; // z scaling for visual depth
+  // ---------- focus AI state ----------
+  const [isFocused, setIsFocused] = useState(true);
+  const [focusPercent, setFocusPercent] = useState(100);
+  const [distractions, setDistractions] = useState(0);
 
+  const focusStatsRef = useRef({
+    lastUpdate:
+      typeof performance !== "undefined" ? performance.now() : Date.now(),
+    focusedMs: 0,
+    totalMs: 0,
+    lastFocusedFlag: true,
+    unfocusedSince: null,
+  });
+
+  const [headTurned, setHeadTurned] = useState(false); // yaw (left/right)
+  const [eyesOffScreen, setEyesOffScreen] = useState(false); // pitch (up/down)
+
+  // ---------- audio for continuous beep ----------
+  const audioCtxRef = useRef(null);
+  const beepIntervalRef = useRef(null);
+
+  const playBeep = () => {
+    try {
+      const AudioCtx =
+        window.AudioContext || window.webkitAudioContext || null;
+      if (!AudioCtx) return;
+
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new AudioCtx();
+      }
+      const ctx = audioCtxRef.current;
+
+      if (ctx.state === "suspended") {
+        ctx.resume();
+      }
+
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = "sine";
+      osc.frequency.value = 880; // beep pitch
+      gain.gain.value = 0.05; // volume
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      const now = ctx.currentTime;
+      osc.start(now);
+      osc.stop(now + 0.15); // 150ms beep
+    } catch (e) {
+      console.warn("Beep failed:", e);
+    }
+  };
+
+  // start / stop continuous beeps based on focus/face
   useEffect(() => {
-    // Bootstrapping pipeline on mount:
-    // 1) Request camera and start <video>
-    // 2) Initialize TFJS (WebGL backend)
-    // 3) Load FaceMesh model (prefer MediaPipe detector, fallback to TFJS or legacy package)
-    // 4) Setup Three.js renderer/scene/camera
-    // 5) Start detection/render loop and handle window resizes
+    // "Alert" state: either not focused OR no face visible
+    const shouldAlert = !isFocused || facesCount === 0;
+
+    if (shouldAlert) {
+      if (!beepIntervalRef.current) {
+        // beep every 1.2s while unfocused
+        beepIntervalRef.current = setInterval(() => {
+          playBeep();
+        }, 1200);
+      }
+    } else {
+      if (beepIntervalRef.current) {
+        clearInterval(beepIntervalRef.current);
+        beepIntervalRef.current = null;
+      }
+    }
+
+    return () => {
+      if (beepIntervalRef.current) {
+        clearInterval(beepIntervalRef.current);
+        beepIntervalRef.current = null;
+      }
+    };
+  }, [isFocused, facesCount]);
+
+  // clean up audio context on unmount
+  useEffect(() => {
+    return () => {
+      if (audioCtxRef.current) {
+        audioCtxRef.current.close();
+      }
+    };
+  }, []);
+
+  // ---------- vis params ----------
+  const DRAW_LINES = true;
+  const CONNECT_K = 2;
+  const LINES_UPDATE_EVERY_N_FRAMES = 2;
+  const DEPTH_SCALE = 50;
+
+  // --- helper: approximate head yaw from landmarks ---
+  const estimateHeadYaw = (pts) => {
+    if (!pts || pts.length < 10) return 0.5;
+
+    let minX = Infinity;
+    let maxX = -Infinity;
+    for (const [x] of pts) {
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+    }
+    const width = Math.max(1, maxX - minX);
+
+    const noseIdx = 1;
+    const noseX = pts[noseIdx]?.[0] ?? (minX + maxX) / 2;
+
+    return (noseX - minX) / width; // 0..1
+  };
+
+  // --- helper: approximate head pitch (up/down) from eye height ---
+  const estimateEyeHeight = (pts) => {
+    if (!pts || pts.length < 400) return 0.5;
+
+    const LEFT_EYE_OUTER = 33;
+    const RIGHT_EYE_OUTER = 263;
+
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const [, y] of pts) {
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+    const height = Math.max(1, maxY - minY);
+
+    const leftY = pts[LEFT_EYE_OUTER]?.[1] ?? (minY + maxY) / 2;
+    const rightY = pts[RIGHT_EYE_OUTER]?.[1] ?? (minY + maxY) / 2;
+    const eyesY = (leftY + rightY) / 2;
+
+    return (eyesY - minY) / height; // 0..1
+  };
+
+  // ------------- main effect: camera + facemesh + three.js -------------
+  useEffect(() => {
     let isMounted = true;
 
     const init = async () => {
       try {
         setStatus("Requesting camera...");
-        // Ask the browser for the front-facing camera at 640x480.
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: "user", width: 640, height: 480 },
           audio: false,
         });
         if (!isMounted) return;
+
         const vid = videoRef.current;
         vid.srcObject = stream;
         await new Promise((res) => (vid.onloadedmetadata = res));
         await vid.play();
 
         setStatus("Preparing TensorFlow.js...");
-        // Use the WebGL backend for GPU acceleration (required for speed).
         await tf.setBackend("webgl");
         await tf.ready();
         setStatus(`TFJS backend: ${tf.getBackend()}`);
 
         setStatus("Loading face model...");
-        // Prefer the new Detector API when available.
         if (typeof faceLandmarksDetection.createDetector === "function") {
           const model = faceLandmarksDetection.SupportedModels.MediaPipeFaceMesh;
           try {
-            // Prefer MediaPipe runtime for better accuracy and speed.
-            modelRef.current = await faceLandmarksDetection.createDetector(model, {
-              runtime: "mediapipe",
-              refineLandmarks: true,
-              maxFaces: 1,
-              solutionPath: "https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh",
-              modelType: "full",
-            });
+            modelRef.current = await faceLandmarksDetection.createDetector(
+              model,
+              {
+                runtime: "mediapipe",
+                refineLandmarks: true,
+                maxFaces: 1,
+                solutionPath:
+                  "https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh",
+                modelType: "full",
+              }
+            );
             apiRef.current = "detector_mediapipe";
           } catch (e) {
             console.warn("Falling back to TFJS runtime for FaceMesh", e);
-            modelRef.current = await faceLandmarksDetection.createDetector(model, {
-              runtime: "tfjs",
-              refineLandmarks: true,
-              maxFaces: 1,
-            });
+            modelRef.current = await faceLandmarksDetection.createDetector(
+              model,
+              {
+                runtime: "tfjs",
+                refineLandmarks: true,
+                maxFaces: 1,
+              }
+            );
             apiRef.current = "detector_tfjs";
           }
         } else {
-          // Legacy package API path (older @tensorflow-models/face-landmarks-detection API)
           modelRef.current = await faceLandmarksDetection.load(
             faceLandmarksDetection.SupportedPackages.mediapipeFacemesh,
-            {
-              maxFaces: 1,
-              shouldLoadIrisModel: false,
-            }
+            { maxFaces: 1, shouldLoadIrisModel: false }
           );
           apiRef.current = "package";
         }
 
         if (!isMounted) return;
         setupThree();
-
         setStatus("Running...");
-        // Kick off the RAF loop
+
         loop();
         window.addEventListener("resize", handleResize);
         handleResize();
@@ -134,23 +253,20 @@ export default function FaceMesh3D() {
     };
 
     const setupThree = () => {
-      // Create the WebGL renderer and size it to our container.
       const container = containerRef.current;
       const width = container.clientWidth || 640;
       const height = Math.floor((width * 3) / 4);
 
       const renderer = new THREE.WebGLRenderer({
         antialias: true,
-        alpha: true, // allow the webcam video underneath to show through
+        alpha: true,
         powerPreference: "high-performance",
         preserveDrawingBuffer: false,
       });
-      // Respect high-DPI screens but cap at 2x for perf.
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
       renderer.setSize(width, height);
-      renderer.setClearAlpha(0); // transparent background so the video is visible
+      renderer.setClearAlpha(0);
       container.appendChild(renderer.domElement);
-      // Position the canvas above the video element
       renderer.domElement.style.position = "absolute";
       renderer.domElement.style.top = "0";
       renderer.domElement.style.left = "0";
@@ -162,20 +278,22 @@ export default function FaceMesh3D() {
       const scene = new THREE.Scene();
       sceneRef.current = scene;
 
-      // Orthographic camera mapped to pixel coordinates (origin top-left)
-      // Note: THREE.OrthographicCamera(left, right, top, bottom, near, far)
-      // We set top=0 and bottom=height to align y increasing downward (CSS-like coordinates).
-      const camera = new THREE.OrthographicCamera(0, width, 0, height, -1000, 1000);
+      const camera = new THREE.OrthographicCamera(
+        0,
+        width,
+        0,
+        height,
+        -1000,
+        1000
+      );
       camera.position.z = 10;
       cameraRef.current = camera;
 
-      // A basic ambient light so the points/lines are visible.
       const light = new THREE.AmbientLight(0xffffff, 1.0);
       scene.add(light);
     };
 
     const handleResize = () => {
-      // Keep renderer size and camera frustum in sync with the container.
       const container = containerRef.current;
       if (!container || !rendererRef.current || !cameraRef.current) return;
       const width = container.clientWidth || 640;
@@ -184,18 +302,19 @@ export default function FaceMesh3D() {
       const cam = cameraRef.current;
       cam.left = 0;
       cam.right = width;
-      cam.top = 0;     // y-down
+      cam.top = 0;
       cam.bottom = height;
       cam.updateProjectionMatrix();
     };
 
     const estimateFaces = async () => {
-      // Estimate faces from the current video frame.
-      // New Detector API accepts the HTMLVideoElement directly; legacy API takes an object.
       if (!modelRef.current) return [];
-      if (apiRef.current === "detector_mediapipe" || apiRef.current === "detector_tfjs") {
+      if (
+        apiRef.current === "detector_mediapipe" ||
+        apiRef.current === "detector_tfjs"
+      ) {
         return await modelRef.current.estimateFaces(videoRef.current, {
-          flipHorizontal: true, // mirror to match user’s perspective
+          flipHorizontal: true,
         });
       }
       return await modelRef.current.estimateFaces({
@@ -206,7 +325,6 @@ export default function FaceMesh3D() {
       });
     };
 
-    // Map model pixel coordinates to canvas CSS pixels, accounting for 'cover' scaling
     const toDisplayPoints = (points) => {
       const container = containerRef.current;
       const video = videoRef.current;
@@ -216,8 +334,6 @@ export default function FaceMesh3D() {
       const ch = rect.height || Math.floor((cw * 3) / 4);
       const vw = video.videoWidth || cw;
       const vh = video.videoHeight || ch;
-      // object-fit: cover -> scale by the larger factor and center crop
-      // s = max(cw/vw, ch/vh). Then shift by the crop offset (dx, dy).
       const s = Math.max(cw / vw, ch / vh);
       const dx = (cw - vw * s) / 2;
       const dy = (ch - vh * s) / 2;
@@ -225,16 +341,12 @@ export default function FaceMesh3D() {
     };
 
     const extract2DPoints = (face) => {
-      // Extract [x,y,z] landmarks in pixel space regardless of API mode.
-      // Prefer pixel-space keypoints (new detector API)
       if (face?.keypoints && face.keypoints.length) {
         return face.keypoints.map((k) => [k.x, k.y, k.z ?? 0]);
       }
-      // Old API: scaledMesh in pixel space
       if (face?.scaledMesh && face.scaledMesh.length) {
         return face.scaledMesh.map((p) => [p[0], p[1], p[2] ?? 0]);
       }
-      // Old API: mesh may be normalized [0..1]
       if (face?.mesh && face.mesh.length) {
         const w = rendererRef.current?.domElement.width || 640;
         const h = rendererRef.current?.domElement.height || 480;
@@ -244,16 +356,17 @@ export default function FaceMesh3D() {
     };
 
     const updateGeometry = (points) => {
-      // Create or update the Three.js Points geometry for the current landmarks.
       const scene = sceneRef.current;
       if (!scene) return;
       if (!pointsRef.current) {
         const geometry = new THREE.BufferGeometry();
         const positions = new Float32Array(points.length * 3);
-        geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+        geometry.setAttribute(
+          "position",
+          new THREE.BufferAttribute(positions, 3)
+        );
         const material = new THREE.PointsMaterial({
           color: 0x00e0ff,
-          // Pixel-sized points for consistent visibility
           size: 1.6,
           sizeAttenuation: false,
         });
@@ -262,7 +375,6 @@ export default function FaceMesh3D() {
         pointsRef.current = cloud;
       }
 
-      // Reallocate buffer if landmark count changes
       let positionAttr = pointsRef.current.geometry.getAttribute("position");
       if (!positionAttr || positionAttr.array.length !== points.length * 3) {
         const newPositions = new Float32Array(points.length * 3);
@@ -276,10 +388,8 @@ export default function FaceMesh3D() {
       for (let i = 0; i < points.length; i++) {
         const [x, y, z] = points[i];
         const ix = i * 3;
-        // Use pixel coordinates; detector already flips horizontally, and video is mirrored.
         arr[ix] = x;
-        arr[ix + 1] = y; // y increases downward in our ortho camera
-        // Negate z so that larger z (further from camera) moves "into" the screen in our view.
+        arr[ix + 1] = y;
         arr[ix + 2] = -(z || 0) * DEPTH_SCALE;
       }
       pointsRef.current.geometry.attributes.position.needsUpdate = true;
@@ -290,17 +400,31 @@ export default function FaceMesh3D() {
     let frames = 0;
     let lastFpsUpdate = performance.now();
     let lineFrameCounter = 0;
+
     const loop = async () => {
-      // Per-frame: run detection, update geometry/lines, render, and update FPS.
       const faces = await estimateFaces();
       setFacesCount(faces?.length || 0);
+
       if (faces && faces.length) {
         const raw = extract2DPoints(faces[0]);
         const pts = toDisplayPoints(raw);
         if (pts.length) {
+          const yawNorm = estimateHeadYaw(pts); // 0..1
+          const eyeHeight = estimateEyeHeight(pts); // 0..1
+
+          const turned = yawNorm < 0.45 || yawNorm > 0.55;
+          setHeadTurned(turned);
+
+          const eyesDown = eyeHeight < 0.30;
+          const eyesUp = eyeHeight > 0.60;
+          setEyesOffScreen(eyesDown || eyesUp);
+
           updateGeometry(pts);
-          if (DRAW_LINES && (lineFrameCounter++ % LINES_UPDATE_EVERY_N_FRAMES === 0)) {
-            // Recompute simple K-nearest neighbor connections (approximate wireframe)
+
+          if (
+            DRAW_LINES &&
+            lineFrameCounter++ % LINES_UPDATE_EVERY_N_FRAMES === 0
+          ) {
             const n = pts.length;
             const edges = new Set();
             for (let i = 0; i < n; i++) {
@@ -330,7 +454,11 @@ export default function FaceMesh3D() {
             const m = edges.size;
             if (!linesRef.current) {
               const geom = new THREE.BufferGeometry();
-              const mat = new THREE.LineBasicMaterial({ color: 0x14e1ff, opacity: 0.85, transparent: true });
+              const mat = new THREE.LineBasicMaterial({
+                color: 0x14e1ff,
+                opacity: 0.85,
+                transparent: true,
+              });
               const lines = new THREE.LineSegments(geom, mat);
               sceneRef.current.add(lines);
               linesRef.current = lines;
@@ -358,10 +486,11 @@ export default function FaceMesh3D() {
           }
         }
       }
+
       if (rendererRef.current && sceneRef.current && cameraRef.current) {
         rendererRef.current.render(sceneRef.current, cameraRef.current);
       }
-      // FPS tracking: sample roughly twice per second to avoid noise
+
       frames += 1;
       const now = performance.now();
       if (now - lastFpsUpdate > 500) {
@@ -371,13 +500,13 @@ export default function FaceMesh3D() {
         lastTime = now;
         lastFpsUpdate = now;
       }
+
       rafRef.current = requestAnimationFrame(loop);
     };
 
     init();
 
     return () => {
-      // On unmount: stop RAF, detach listeners, release camera, and dispose GL resources.
       isMounted = false;
       cancelAnimationFrame(rafRef.current);
       window.removeEventListener("resize", handleResize);
@@ -409,7 +538,7 @@ export default function FaceMesh3D() {
     };
   }, []);
 
-  // Reflect debug toggle to WebGazer's prediction dot overlay
+  // ------------- webgazer overlays -------------
   useEffect(() => {
     try {
       const wg = webgazerRef.current || window.webgazer;
@@ -417,8 +546,6 @@ export default function FaceMesh3D() {
     } catch (_) {}
   }, [showGazeDot]);
 
-  // Helpers to run a simple 9-point click calibration
-  // Clears prior data, enables WebGazer's mouse-based sampling, and shows prediction points.
   const startCalibration = () => {
     setCalibrating(true);
     setCalibrationCounts(new Array(9).fill(0));
@@ -438,19 +565,13 @@ export default function FaceMesh3D() {
     } catch (_) {}
   };
 
-  // WebGazer integration
-  // Goal: decide if user's gaze is on the current screen (viewport) vs off-screen.
-  // Notes:
-  // - Face presence (facesCount) is separate from gaze. Gaze uses WebGazer's x,y in viewport pixels.
-  // - We consider gaze "on-screen" when x,y fall within the window bounds (with a small margin).
-  // - We smooth using time: offScreen becomes true only if we haven't seen an on-screen gaze
-  //   for OFFSCREEN_DELAY_MS (helps avoid flicker).
+  // ------------- webgazer: offScreen detection -------------
   useEffect(() => {
     let cancelled = false;
     const loadScript = () =>
       new Promise((resolve, reject) => {
-        // Load WebGazer from CDN once; reuse if present on window.
-        if (typeof window !== "undefined" && window.webgazer) return resolve(window.webgazer);
+        if (typeof window !== "undefined" && window.webgazer)
+          return resolve(window.webgazer);
         const s = document.createElement("script");
         s.src = "https://cdn.jsdelivr.net/npm/webgazer/dist/webgazer.min.js";
         s.async = true;
@@ -465,34 +586,40 @@ export default function FaceMesh3D() {
         if (cancelled || !wg) return;
         webgazerRef.current = wg;
         try {
-          // Turn off WebGazer's own overlays; we manage UI ourselves.
-          if (wg.showVideoPreview) wg.showVideoPreview(false);
-          if (wg.showPredictionPoints) wg.showPredictionPoints(false);
-          if (wg.showFaceOverlay) wg.showFaceOverlay(false);
-          if (wg.showFaceFeedbackBox) wg.showFaceFeedbackBox(false);
-          // Use ridge regression and TF FaceMesh-based tracker for better stability.
-          if (wg.setRegression) wg.setRegression("ridge");
-          if (wg.setTracker) { try { wg.setTracker("TFFacemesh"); } catch (_) {} }
+          wg.showVideoPreview && wg.showVideoPreview(false);
+          wg.showPredictionPoints && wg.showPredictionPoints(false);
+          wg.showFaceOverlay && wg.showFaceOverlay(false);
+          wg.showFaceFeedbackBox && wg.showFaceFeedbackBox(false);
+          wg.setRegression && wg.setRegression("ridge");
+          if (wg.setTracker) {
+            try {
+              wg.setTracker("TFFacemesh");
+            } catch (_) {}
+          }
         } catch (_) {}
 
-        const OFFSCREEN_DELAY_MS = 250; // require ~250ms away before flagging off-screen
+        const OFFSCREEN_DELAY_MS = 250;
         let lastOnScreenAt = performance.now();
 
         wg.setGazeListener((data) => {
           if (cancelled) return;
-          // Allow a small margin around the viewport to avoid flicker at edges.
-          const margin = 40;
-          const W = window.innerWidth || document.documentElement.clientWidth || 0;
-          const H = window.innerHeight || document.documentElement.clientHeight || 0;
-          // Treat only valid predictions as signal; missing predictions do not reset the timer.
-          const valid = data && typeof data.x === "number" && typeof data.y === "number";
+          const margin = 5;
+          const W =
+            window.innerWidth || document.documentElement.clientWidth || 0;
+          const H =
+            window.innerHeight || document.documentElement.clientHeight || 0;
+          const valid =
+            data && typeof data.x === "number" && typeof data.y === "number";
           if (valid) {
             const x = data.x;
             const y = data.y;
             setGazeXY({ x: Math.round(x), y: Math.round(y) });
-            const inside = x >= -margin && x <= W + margin && y >= -margin && y <= H + margin;
+            const inside =
+              x >= -margin &&
+              x <= W + margin &&
+              y >= -margin &&
+              y <= H + margin;
             if (inside) {
-              // Update the last time we confirmed on-screen gaze.
               lastOnScreenAt = performance.now();
             }
           } else {
@@ -511,14 +638,55 @@ export default function FaceMesh3D() {
       try {
         const wg = webgazerRef.current || window.webgazer;
         if (wg) {
-          if (wg.clearGazeListener) wg.clearGazeListener();
-          if (wg.removeMouseEventListeners) wg.removeMouseEventListeners();
-          if (wg.end) wg.end();
+          wg.clearGazeListener && wg.clearGazeListener();
+          wg.removeMouseEventListeners && wg.removeMouseEventListeners();
+          wg.end && wg.end();
         }
       } catch (_) {}
     };
   }, []);
 
+  // ------------- FOCUS AI EFFECT -------------
+  useEffect(() => {
+    const now =
+      typeof performance !== "undefined" ? performance.now() : Date.now();
+    const stats = focusStatsRef.current;
+
+    const dt = now - stats.lastUpdate;
+    stats.lastUpdate = now;
+
+    stats.totalMs += dt;
+    if (stats.lastFocusedFlag) stats.focusedMs += dt;
+
+    // focused if: 1 face + gaze on-screen + head not turned + eyes not clearly up/down
+    const rawFocused =
+      facesCount === 1 && !offScreen && !headTurned && !eyesOffScreen;
+    const UNFOCUS_THRESHOLD_MS = 2000;
+
+    if (!rawFocused) {
+      if (stats.unfocusedSince == null) {
+        stats.unfocusedSince = now;
+      } else if (now - stats.unfocusedSince > UNFOCUS_THRESHOLD_MS) {
+        if (stats.lastFocusedFlag === true) {
+          setDistractions((d) => d + 1);
+        }
+        stats.lastFocusedFlag = false;
+      }
+    } else {
+      stats.unfocusedSince = null;
+      stats.lastFocusedFlag = true;
+    }
+
+    setIsFocused(stats.lastFocusedFlag);
+    if (stats.totalMs > 0) {
+      setFocusPercent(Math.round((stats.focusedMs / stats.totalMs) * 100));
+    }
+  }, [offScreen, facesCount, headTurned, eyesOffScreen]);
+
+  // ----------- derived UI state: what to show as "not focused" ----------
+  const displayNotFocused = !isFocused || facesCount === 0;
+
+  // ------------- RENDER -------------
   return (
     <div
       ref={containerRef}
@@ -527,13 +695,12 @@ export default function FaceMesh3D() {
         width: "100%",
         maxWidth: 800,
         aspectRatio: "4 / 3",
-        // Background hint: light red if gaze is off-screen AND no face detected.
-        // Otherwise white. This is subtle and independent of the top banner below.
-        background: offScreen && facesCount === 0 ? "rgba(255, 0, 0, 0.3)" : "#000",
+        // red background if our display state says "not focused" OR no face
+        background: displayNotFocused ? "rgba(255, 0, 0, 0.3)" : "#000",
         overflow: "hidden",
       }}
     >
-      {/* Face-count banner: red (0), green (>1), neutral (1) */}
+      {/* banner */}
       <div
         aria-live="polite"
         style={{
@@ -549,9 +716,7 @@ export default function FaceMesh3D() {
           fontSize: 12,
           color: "#fff",
           zIndex: 5,
-          // Color logic: red (no faces), green (>1 face), neutral gray (exactly 1 face)
-          background:
-            facesCount === 0 ? "#e53935"  : "#2e7d32",
+          background: facesCount === 0 ? "#e53935" : "#2e7d32",
           opacity: 0.92,
           pointerEvents: "none",
         }}
@@ -562,11 +727,11 @@ export default function FaceMesh3D() {
           ? `${facesCount} faces detected`
           : "1 face detected"}
       </div>
-      {/* Small controls: toggle gaze dot, run calibration */}
+
+      {/* controls */}
       <div
         style={{
           position: "absolute",
-          // Offset to sit below the banner
           top: 36,
           right: 8,
           display: "flex",
@@ -574,15 +739,24 @@ export default function FaceMesh3D() {
           zIndex: 3,
         }}
       >
-        <button onClick={() => setShowGazeDot((v) => !v)} style={{ padding: "4px 8px", fontSize: 12 }}>
+        <button
+          onClick={() => setShowGazeDot((v) => !v)}
+          style={{ padding: "4px 8px", fontSize: 12 }}
+        >
           {showGazeDot ? "Hide" : "Show"} Gaze Dot
         </button>
         {!calibrating ? (
-          <button onClick={startCalibration} style={{ padding: "4px 8px", fontSize: 12 }}>
+          <button
+            onClick={startCalibration}
+            style={{ padding: "4px 8px", fontSize: 12 }}
+          >
             Calibrate
           </button>
         ) : (
-          <button onClick={stopCalibration} style={{ padding: "4px 8px", fontSize: 12 }}>
+          <button
+            onClick={stopCalibration}
+            style={{ padding: "4px 8px", fontSize: 12 }}
+          >
             End Calib
           </button>
         )}
@@ -599,11 +773,10 @@ export default function FaceMesh3D() {
         </button>
       </div>
 
-      {/* Gaze status overlay */}
-      <div
+      {/* gaze status */}
+      {/*<div
         style={{
           position: "absolute",
-          // Below banner and controls
           top: 68,
           left: 8,
           padding: "2px 6px",
@@ -615,69 +788,10 @@ export default function FaceMesh3D() {
         }}
       >
         Gaze: {offScreen ? "off-screen" : "on-screen"}
-      </div>
-      {/* Calibration overlay: 9 clickable targets to help WebGazer learn */}
-      {calibrating && (
-        <div
-          style={{
-            position: "absolute",
-            inset: 0,
-            background: "rgba(0,0,0,0.25)",
-            zIndex: 4,
-          }}
-        >
-          <div
-            style={{
-              position: "absolute",
-              // Offset to sit below the banner
-              top: 36,
-              left: 8,
-              padding: "4px 8px",
-              background: "rgba(0,0,0,0.6)",
-              color: "#fff",
-              borderRadius: 4,
-              fontSize: 12,
-            }}
-          >
-            Calibration: click each dot {CALIBRATION_PER_POINT} times while looking at it.
-          </div>
-          {CALIB_POINTS.map(([px, py], idx) => {
-            const count = calibrationCounts[idx] || 0;
-            const done = count >= CALIBRATION_PER_POINT;
-            return (
-              <button
-                key={idx}
-                onClick={() => {
-                  setCalibrationCounts((prev) => {
-                    const next = prev.slice();
-                    next[idx] = Math.min(CALIBRATION_PER_POINT, (next[idx] || 0) + 1);
-                    // Finish automatically when all points reached the quota
-                    if (next.every((c) => c >= CALIBRATION_PER_POINT)) {
-                      stopCalibration();
-                    }
-                    return next;
-                  });
-                }}
-                style={{
-                  position: "absolute",
-                  left: `${px * 100}%`,
-                  top: `${py * 100}%`,
-                  transform: "translate(-50%, -50%)",
-                  width: 18,
-                  height: 18,
-                  borderRadius: 999,
-                  border: done ? "2px solid #4caf50" : "2px solid #14e1ff",
-                  background: done ? "#4caf50" : "#14e1ff",
-                  opacity: 0.9,
-                  cursor: "pointer",
-                }}
-                title={`Clicks: ${count}/${CALIBRATION_PER_POINT}`}
-              />
-            );
-          })}
-        </div>
-      )}
-      {/* Webcam as background for reference */}
+      </div>*/}
+      
+
+      {/* webcam */}
       <video
         ref={videoRef}
         playsInline
@@ -695,22 +809,104 @@ export default function FaceMesh3D() {
           zIndex: 0,
         }}
       />
-      <div
-        style={{
-          position: "absolute",
-          // Move down to avoid overlapping the face-count banner
-          top: 36,
-          left: 8,
-          padding: "4px 8px",
-          background: "rgba(0,0,0,0.5)",
-          color: "#fff",
-          borderRadius: 4,
-          fontSize: 12,
-          zIndex: 2,
-        }}
-      >
-        {status} • Faces: {facesCount} • FPS: {fps}
-      </div>
+
+      {/* status + FOCUS INFO */}
+<div
+  style={{
+    position: "absolute",
+    top: 36,
+    left: 8,
+    padding: "6px 10px",
+    background: "rgba(0,0,0,0.6)",
+    color: "#fff",
+    borderRadius: 4,
+    fontSize: 12,
+    zIndex: 2,
+    display: "flex",
+    flexDirection: "column",
+    gap: 3,
+    lineHeight: 1.3,
+    maxWidth: 260,
+  }}
+>
+  <div>{status} • Faces: {facesCount} • FPS: {fps}</div>
+  <div>Focus: {isFocused ? "Focused ✅" : "Not focused ❌"}</div>
+  <div>Session focus: {focusPercent}%</div>
+  <div>Distractions: {distractions}</div>
+  <div>
+    Head turned: {headTurned ? "yes" : "no"} • Eyes off-screen:{" "}
+    {eyesOffScreen ? "yes" : "no"}
+  </div>
+  <div>Alerting: {displayNotFocused ? "YES (beeping)" : "no"}</div>
+</div>
+
+
+      {/* calibration overlay */}
+      {calibrating && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            background: "rgba(0,0,0,0.25)",
+            zIndex: 4,
+          }}
+        >
+          <div
+            style={{
+              position: "absolute",
+              top: 36,
+              left: 8,
+              padding: "4px 8px",
+              background: "rgba(0,0,0,0.6)",
+              color: "#fff",
+              borderRadius: 4,
+              fontSize: 12,
+            }}
+          >
+            Calibration: click each dot {CALIBRATION_PER_POINT} times while
+            looking at it.
+          </div>
+          {CALIB_POINTS.map(([px, py], idx) => {
+            const count = calibrationCounts[idx] || 0;
+            const done = count >= CALIBRATION_PER_POINT;
+            return (
+              <button
+                key={idx}
+                onClick={() => {
+                  setCalibrationCounts((prev) => {
+                    const next = prev.slice();
+                    next[idx] = Math.min(
+                      CALIBRATION_PER_POINT,
+                      (next[idx] || 0) + 1
+                    );
+                    if (next.every((c) => c >= CALIBRATION_PER_POINT)) {
+                      stopCalibration();
+                    }
+                    return next;
+                  });
+                }}
+                style={{
+                  position: "absolute",
+                  left: `${px * 100}%`,
+                  top: `${py * 100}%`,
+                  transform: "translate(-50%, -50%)",
+                  width: 18,
+                  height: 18,
+                  borderRadius: 999,
+                  border: done
+                    ? "2px solid #4caf50"
+                    : "2px solid #14e1ff",
+                  background: done ? "#4caf50" : "#14e1ff",
+                  opacity: 0.9,
+                  cursor: "pointer",
+                }}
+                title={`Clicks: ${count}/${CALIBRATION_PER_POINT}`}
+              />
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
+
