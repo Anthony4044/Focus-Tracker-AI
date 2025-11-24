@@ -1,7 +1,8 @@
 // src/App.jsx
 import React, { useState, useEffect, useRef } from "react";
 import FaceMesh3D from "./components/FaceMesh3D.jsx";
-import "./App.css";
+import "./css/App.css";
+//import HomePage from "./HomePage.jsx";
 
 /* ---------- Small helper: parse duration string ---------- */
 /**
@@ -38,15 +39,22 @@ function parseDurationToMinutes(value) {
 
 function LoginPage({ onLogin }) {
   const [name, setName] = useState("");
+  const [clicked, setClicked] = useState(false);
 
   const handleSubmit = (e) => {
     e.preventDefault();
+    setClicked(true);
     const trimmed = name.trim();
     if (!trimmed) return;
     onLogin(trimmed);
   };
 
   return (
+
+    <>
+    {clicked ? (
+        <HomePage/>
+      ) : (
     <div className="app-root">
       <div className="session-card auth-card">
         <h1 className="session-title">Welcome to Focus Tracker AI</h1>
@@ -73,7 +81,8 @@ function LoginPage({ onLogin }) {
           </button>
         </form>
       </div>
-    </div>
+    </div>)}
+    </>
   );
 }
 
