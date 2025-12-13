@@ -343,6 +343,10 @@ function SurveyPage({ lastSession, onSubmit }) {
   });
 
   const update = (k, v) => setAnswers(a => ({ ...a, [k]: v }));
+  const sliderFill = (v) => {
+    const n = Math.min(5, Math.max(1, Number(v) || 1));
+    return `${((n - 1) / 4) * 100}%`;
+  };
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -355,10 +359,32 @@ function SurveyPage({ lastSession, onSubmit }) {
         <h1 className="session-title">Session Survey</h1>
         <form className="form-grid" onSubmit={handleSubmit}>
           {/* Survey fields (same as before) */}
-          <label>Focus level (1-5)</label>
-          <input type="range" min="1" max="5" value={answers.focusLevel} onChange={e => update("focusLevel", e.target.value)} />
-          <label>Distraction level (1-5)</label>
-          <input type="range" min="1" max="5" value={answers.distractionFeel} onChange={e => update("distractionFeel", e.target.value)} />
+          <label className="range-label">
+            <span>Focus level (1-5)</span>
+            <span className="range-value">{answers.focusLevel}</span>
+          </label>
+          <input
+            type="range"
+            min="1"
+            max="5"
+            className="survey-range"
+            value={answers.focusLevel}
+            onChange={e => update("focusLevel", e.target.value)}
+            style={{ "--slider-fill": sliderFill(answers.focusLevel) }}
+          />
+          <label className="range-label">
+            <span>Distraction level (1-5)</span>
+            <span className="range-value">{answers.distractionFeel}</span>
+          </label>
+          <input
+            type="range"
+            min="1"
+            max="5"
+            className="survey-range"
+            value={answers.distractionFeel}
+            onChange={e => update("distractionFeel", e.target.value)}
+            style={{ "--slider-fill": sliderFill(answers.distractionFeel) }}
+          />
           <label>Distraction source</label>
           <textarea value={answers.distractionSource} onChange={e => update("distractionSource", e.target.value)} />
           <label>Face mesh effect</label>
@@ -373,12 +399,34 @@ function SurveyPage({ lastSession, onSubmit }) {
             <option value="sometimes">Sometimes</option>
             <option value="often">Often</option>
           </select>
-          <label>Ease of use (1-5)</label>
-          <input type="range" min="1" max="5" value={answers.easeOfUse} onChange={e => update("easeOfUse", e.target.value)} />
+          <label className="range-label">
+            <span>Ease of use (1-5)</span>
+            <span className="range-value">{answers.easeOfUse}</span>
+          </label>
+          <input
+            type="range"
+            min="1"
+            max="5"
+            className="survey-range"
+            value={answers.easeOfUse}
+            onChange={e => update("easeOfUse", e.target.value)}
+            style={{ "--slider-fill": sliderFill(answers.easeOfUse) }}
+          />
           <label>Unnecessary features</label>
           <textarea value={answers.unnecessaryFeatures} onChange={e => update("unnecessaryFeatures", e.target.value)} />
-          <label>Comfort level (1-5)</label>
-          <input type="range" min="1" max="5" value={answers.comfortLevel} onChange={e => update("comfortLevel", e.target.value)} />
+          <label className="range-label">
+            <span>Comfort level (1-5)</span>
+            <span className="range-value">{answers.comfortLevel}</span>
+          </label>
+          <input
+            type="range"
+            min="1"
+            max="5"
+            className="survey-range"
+            value={answers.comfortLevel}
+            onChange={e => update("comfortLevel", e.target.value)}
+            style={{ "--slider-fill": sliderFill(answers.comfortLevel) }}
+          />
           <label>Mesh caused stress?</label>
           <select value={answers.meshStress} onChange={e => update("meshStress", e.target.value)}>
             <option value="no">No</option>
