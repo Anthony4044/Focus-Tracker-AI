@@ -484,3 +484,52 @@
     padding: 1.25rem;
   }
 }
+
+/* Calibration fullscreen */
+.calibration-screen {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: #0b1220;
+}
+
+.calibration-card {
+  width: min(1200px, 100%);
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 1.75rem;
+  box-shadow: var(--shadow-soft);
+}
+
+.calibration-stage {
+  position: relative;
+  width: 100%;
+  height: calc(100vh - 320px);
+  min-height: 420px;
+  background: radial-gradient(120% 120% at 20% 15%, #111827, #0b1220);
+  border-radius: var(--radius-lg);
+  border: 1px solid #0f172a;
+  margin-bottom: 1rem;
+  overflow: hidden;
+}
+
+.calibration-dot {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.calibration-gaze-dot {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #a78bfa;
+  transform: translate(-50%, -50%);
+  opacity: 0.85;
+}

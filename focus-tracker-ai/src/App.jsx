@@ -208,6 +208,165 @@ function PreSessionForm({ onBack, onStart }) {
   );
 }
 
+function GazeCalibrationPage({ config, onCancel, onComplete }) {
+  const [loading, setLoading] = useState(true);
+  const [lastGaze, setLastGaze] = useState(null);
+  const [points, setPoints] = useState([]);
+  const [step, setStep] = useState(0);
+  const [showGazeMarker, setShowGazeMarker] = useState(true);
+
+  const steps = [
+    { label: "Top-left", x: "12%", y: "12%" },
+    { label: "Top-right", x: "88%", y: "12%" },
+    { label: "Bottom-right", x: "88%", y: "88%" },
+    { label: "Bottom-left", x: "12%", y: "88%" },
+  ];
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadScript = () =>
+      new Promise((resolve, reject) => {
+        if (typeof window !== "undefined" && window.webgazer)
+          return resolve(window.webgazer);
+        const s = document.createElement("script");
+        s.src = "https://cdn.jsdelivr.net/npm/webgazer/dist/webgazer.min.js";
+        s.async = true;
+        s.crossOrigin = "anonymous";
+        s.onload = () => resolve(window.webgazer);
+        s.onerror = reject;
+        document.head.appendChild(s);
+      });
+
+    loadScript()
+      .then((wg) => {
+        if (cancelled || !wg) return;
+        setLoading(false);
+        try {
+          wg.showPredictionPoints && wg.showPredictionPoints(true);
+          wg.showVideoPreview && wg.showVideoPreview(false);
+          wg.showFaceOverlay && wg.showFaceOverlay(false);
+          wg.showFaceFeedbackBox && wg.showFaceFeedbackBox(false);
+          wg.setRegression && wg.setRegression("ridge");
+        } catch (_) {}
+        wg.setGazeListener((data) => {
+          if (!data || typeof data.x !== "number" || typeof data.y !== "number")
+            return;
+          setLastGaze({ x: data.x, y: data.y });
+        }).begin();
+      })
+      .catch(() => setLoading(false));
+
+    return () => {
+      cancelled = true;
+      try {
+        const wg = window.webgazer;
+        if (wg) {
+          wg.clearGazeListener && wg.clearGazeListener();
+          wg.removeMouseEventListeners && wg.removeMouseEventListeners();
+          wg.showPredictionPoints && wg.showPredictionPoints(false);
+        }
+      } catch (_) {}
+    };
+  }, []);
+
+  const capturePoint = () => {
+    if (!lastGaze) return;
+    const next = [...points, lastGaze];
+    setPoints(next);
+    if (next.length >= steps.length) {
+      const xs = next.map((p) => p.x);
+      const ys = next.map((p) => p.y);
+      const minX = Math.min(...xs);
+      const maxX = Math.max(...xs);
+      const minY = Math.min(...ys);
+      const maxY = Math.max(...ys);
+      const width = Math.max(1, maxX - minX);
+      const height = Math.max(1, maxY - minY);
+      // Use a generous margin so "outside" truly means well beyond the calibrated window
+      const margin = Math.max(120, Math.round(0.2 * Math.min(width, height)));
+      onComplete({
+        minX,
+        maxX,
+        minY,
+        maxY,
+        margin,
+      });
+    } else {
+      setStep(next.length);
+    }
+  };
+
+  const reset = () => {
+    setPoints([]);
+    setStep(0);
+  };
+
+  const current = steps[step];
+
+  return (
+    <div className="calibration-screen">
+      <div className="calibration-card">
+        <h1 className="session-title">Gaze calibration</h1>
+        <p className="session-description">
+          Look at each highlighted corner dot and click &quot;Capture corner&quot; to calibrate your gaze limits.
+          This runs before the session timer starts.
+        </p>
+
+        <div className="calibration-stage">
+          {steps.map((s, i) => (
+            <div
+              key={i}
+              className="calibration-dot"
+              style={{
+                left: s.x,
+                top: s.y,
+                background: i === step ? "#22d3ee" : "#334155",
+                boxShadow: i === step ? "0 0 0 14px rgba(34, 211, 238, 0.25)" : "none",
+              }}
+            />
+          ))}
+          {lastGaze && showGazeMarker && (
+            <div
+              className="calibration-gaze-dot"
+              style={{
+                left: `${(lastGaze.x / (window.innerWidth || 1)) * 100}%`,
+                top: `${(lastGaze.y / (window.innerHeight || 1)) * 100}%`,
+              }}
+            />
+          )}
+        </div>
+
+        <div className="form-grid">
+          <div className="form-field">
+            <label className="range-label">
+              <span>Current corner</span>
+              <span className="range-value">{current?.label}</span>
+            </label>
+            <p className="muted-text" style={{ margin: 0 }}>
+              Keep your gaze steady on the highlighted dot, then click capture. Captured: {points.length}/{steps.length}.
+            </p>
+          </div>
+
+          <div className="form-actions">
+            <button className="btn btn-secondary" type="button" onClick={onCancel}>Cancel</button>
+            <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+              <button className="btn btn-secondary" type="button" onClick={() => setShowGazeMarker((v) => !v)}>
+                {showGazeMarker ? "Hide" : "Show"} gaze dot
+              </button>
+              <button className="btn btn-secondary" type="button" onClick={reset}>
+                Reset
+              </button>
+              <button className="btn btn-primary" type="button" onClick={capturePoint} disabled={!lastGaze || loading}>
+                {step >= steps.length - 1 ? "Finish calibration" : "Capture corner"}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ProfilePage({ userName, sessions, onBack }) {
   return (
     <div className="app-root">
@@ -255,7 +414,7 @@ function ProfilePage({ userName, sessions, onBack }) {
 
 /* ---------- SESSION PAGE ---------- */
 
-function SessionPage({ config, onEndSession, soundMuted, onToggleMute, userName, onMetricsUpdate, metrics }) {
+function SessionPage({ config, onEndSession, soundMuted, onToggleMute, userName, onMetricsUpdate, metrics, showGazeDot, onToggleGazeDot }) {
   const rainAudioRef = useRef(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
@@ -301,6 +460,9 @@ function SessionPage({ config, onEndSession, soundMuted, onToggleMute, userName,
             <button className="btn btn-secondary small" type="button" onClick={onToggleMute}>
               {soundMuted ? "Unmute background" : "Mute background"}
             </button>
+            <button className="btn btn-secondary small" type="button" onClick={onToggleGazeDot}>
+              {showGazeDot ? "Hide gaze dot" : "Show gaze dot"}
+            </button>
             <button className="btn btn-outline-danger small" type="button" onClick={onEndSession}>
               End Session
             </button>
@@ -318,7 +480,7 @@ function SessionPage({ config, onEndSession, soundMuted, onToggleMute, userName,
             <p><strong>Alert beeps:</strong> {config.wantsAlerts ? "On" : "Off"}</p>
             <p><strong>Background audio:</strong> {config.wantsBackgroundAudio ? "Yes" : "No"} ({soundMuted ? "Muted" : "On"})</p>
           </aside>
-          <main className="session-main"><FaceMesh3D onStatsChange={onMetricsUpdate} alertEnabled={config.wantsAlerts} /></main>
+          <main className="session-main"><FaceMesh3D onStatsChange={onMetricsUpdate} alertEnabled={config.wantsAlerts} gazeBounds={config.gazeBounds} showGazeDot={showGazeDot} /></main>
         </div>
       </div>
     </div>
@@ -532,14 +694,28 @@ export default function App() {
   const [lastCompleted, setLastCompleted] = useState(null);
   const [surveyResults, setSurveyResults] = useState([]);
   const [sessionMetrics, setSessionMetrics] = useState({ focusPercent: null, distractions: null });
+  const [pendingConfig, setPendingConfig] = useState(null);
+  const [showGazeDot, setShowGazeDot] = useState(false);
 
   const handleLogin = (name) => { setUserName(name); setView("home"); };
 
   const handlePreSessionStart = (config) => {
-    const sessionConfig = { ...config, startedAt: new Date().toISOString() };
     setSessionMetrics({ focusPercent: null, distractions: null });
-    setCurrentConfig(sessionConfig);
+    setPendingConfig(config);
     setBackgroundMuted(!config.wantsBackgroundAudio);
+    setShowGazeDot(false);
+    setView("calibrate");
+  };
+
+  const handleCalibrationComplete = (bounds) => {
+    if (!pendingConfig) {
+      setView("home");
+      return;
+    }
+    const sessionConfig = { ...pendingConfig, startedAt: new Date().toISOString(), gazeBounds: bounds };
+    setCurrentConfig(sessionConfig);
+    setPendingConfig(null);
+    setShowGazeDot(false);
     setView("session");
   };
 
@@ -575,6 +751,11 @@ export default function App() {
       onProfileClick={() => setView("profile")}
       onSurveyResultsClick={() => setView("surveyResults")}
     />;
+    case "calibrate": return <GazeCalibrationPage
+      config={pendingConfig}
+      onCancel={() => { setPendingConfig(null); setView("home"); }}
+      onComplete={handleCalibrationComplete}
+    />;
     case "pre": return <PreSessionForm onBack={() => setView("home")} onStart={handlePreSessionStart} />;
     case "session": return <SessionPage
       config={currentConfig}
@@ -583,6 +764,8 @@ export default function App() {
       onToggleMute={() => setBackgroundMuted(v => !v)}
       onMetricsUpdate={setSessionMetrics}
       metrics={sessionMetrics}
+      showGazeDot={showGazeDot}
+      onToggleGazeDot={() => setShowGazeDot(v => !v)}
       onEndSession={handleEndSession}
     />;
     case "profile": return <ProfilePage userName={userName} sessions={pastSessions} onBack={() => setView("home")} />;

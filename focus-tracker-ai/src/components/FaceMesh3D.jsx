@@ -4,7 +4,7 @@ import "@tensorflow/tfjs-backend-webgl";
 import * as faceLandmarksDetection from "@tensorflow-models/face-landmarks-detection";
 import * as THREE from "three";
 
-export default function FaceMesh3D({ onStatsChange, alertEnabled = true }) {
+export default function FaceMesh3D({ onStatsChange, alertEnabled = true, gazeBounds, showGazeDot }) {
   const containerRef = useRef(null);
   const videoRef = useRef(null);
 
@@ -25,7 +25,7 @@ export default function FaceMesh3D({ onStatsChange, alertEnabled = true }) {
   const [gazeXY, setGazeXY] = useState(null);
 
   const webgazerRef = useRef(null);
-  const [showGazeDot, setShowGazeDot] = useState(false);
+  const [showGazeDotState, setShowGazeDotState] = useState(false);
 
   const [calibrating, setCalibrating] = useState(false);
   const CALIB_POINTS = [
@@ -542,8 +542,15 @@ export default function FaceMesh3D({ onStatsChange, alertEnabled = true }) {
   useEffect(() => {
     try {
       const wg = webgazerRef.current || window.webgazer;
-      wg?.showPredictionPoints?.(showGazeDot);
+      wg?.showPredictionPoints?.(showGazeDotState);
+      const dot = document.getElementById("webgazerGazeDot");
+      if (dot) dot.style.display = showGazeDotState ? "block" : "none";
     } catch (_) {}
+  }, [showGazeDotState]);
+
+  // sync external prop
+  useEffect(() => {
+    setShowGazeDotState(Boolean(showGazeDot));
   }, [showGazeDot]);
 
   const startCalibration = () => {
@@ -554,6 +561,8 @@ export default function FaceMesh3D({ onStatsChange, alertEnabled = true }) {
       wg?.clearData?.();
       wg?.addMouseEventListeners?.();
       wg?.showPredictionPoints?.(true);
+      const dot = document.getElementById("webgazerGazeDot");
+      if (dot) dot.style.display = "block";
     } catch (_) {}
   };
   const stopCalibration = () => {
@@ -561,7 +570,9 @@ export default function FaceMesh3D({ onStatsChange, alertEnabled = true }) {
     try {
       const wg = webgazerRef.current || window.webgazer;
       wg?.removeMouseEventListeners?.();
-      wg?.showPredictionPoints?.(showGazeDot);
+      wg?.showPredictionPoints?.(showGazeDotState);
+      const dot = document.getElementById("webgazerGazeDot");
+      if (dot) dot.style.display = showGazeDotState ? "block" : "none";
     } catch (_) {}
   };
 
@@ -596,6 +607,8 @@ export default function FaceMesh3D({ onStatsChange, alertEnabled = true }) {
               wg.setTracker("TFFacemesh");
             } catch (_) {}
           }
+          const dot = document.getElementById("webgazerGazeDot");
+          if (dot) dot.style.display = "none";
         } catch (_) {}
 
         const OFFSCREEN_DELAY_MS = 250;
@@ -603,11 +616,16 @@ export default function FaceMesh3D({ onStatsChange, alertEnabled = true }) {
 
         wg.setGazeListener((data) => {
           if (cancelled) return;
-          const margin = 5;
+          const margin =
+            typeof gazeBounds?.margin === "number" ? gazeBounds.margin : 150;
           const W =
             window.innerWidth || document.documentElement.clientWidth || 0;
           const H =
             window.innerHeight || document.documentElement.clientHeight || 0;
+          const minX = typeof gazeBounds?.minX === "number" ? gazeBounds.minX : 0;
+          const maxX = typeof gazeBounds?.maxX === "number" ? gazeBounds.maxX : W;
+          const minY = typeof gazeBounds?.minY === "number" ? gazeBounds.minY : 0;
+          const maxY = typeof gazeBounds?.maxY === "number" ? gazeBounds.maxY : H;
           const valid =
             data && typeof data.x === "number" && typeof data.y === "number";
           if (valid) {
@@ -615,10 +633,10 @@ export default function FaceMesh3D({ onStatsChange, alertEnabled = true }) {
             const y = data.y;
             setGazeXY({ x: Math.round(x), y: Math.round(y) });
             const inside =
-              x >= -margin &&
-              x <= W + margin &&
-              y >= -margin &&
-              y <= H + margin;
+              x >= minX - margin &&
+              x <= maxX + margin &&
+              y >= minY - margin &&
+              y <= maxY + margin;
             if (inside) {
               lastOnScreenAt = performance.now();
             }
@@ -644,7 +662,7 @@ export default function FaceMesh3D({ onStatsChange, alertEnabled = true }) {
         }
       } catch (_) {}
     };
-  }, []);
+  }, [gazeBounds]);
 
   // ------------- FOCUS AI EFFECT -------------
   useEffect(() => {
@@ -734,51 +752,6 @@ export default function FaceMesh3D({ onStatsChange, alertEnabled = true }) {
           : "1 face detected"}
       </div>
 
-      {/* controls */}
-      <div
-        style={{
-          position: "absolute",
-          top: 36,
-          right: 8,
-          display: "flex",
-          gap: 8,
-          zIndex: 3,
-        }}
-      >
-        <button
-          onClick={() => setShowGazeDot((v) => !v)}
-          style={{ padding: "4px 8px", fontSize: 12 }}
-        >
-          {showGazeDot ? "Hide" : "Show"} Gaze Dot
-        </button>
-        {!calibrating ? (
-          <button
-            onClick={startCalibration}
-            style={{ padding: "4px 8px", fontSize: 12 }}
-          >
-            Calibrate
-          </button>
-        ) : (
-          <button
-            onClick={stopCalibration}
-            style={{ padding: "4px 8px", fontSize: 12 }}
-          >
-            End Calib
-          </button>
-        )}
-        <button
-          onClick={() => {
-            try {
-              const wg = webgazerRef.current || window.webgazer;
-              wg?.clearData?.();
-            } catch (_) {}
-          }}
-          style={{ padding: "4px 8px", fontSize: 12 }}
-        >
-          Reset Gaze
-        </button>
-      </div>
-
       {/* gaze status */}
       {/*<div
         style={{
@@ -836,13 +809,10 @@ export default function FaceMesh3D({ onStatsChange, alertEnabled = true }) {
   }}
 >
   <div>{status} • Faces: {facesCount} • FPS: {fps}</div>
-  <div>Focus: {isFocused ? "Focused ✅" : "Not focused ❌"}</div>
+  <div>Focus: {isFocused ? "Focused" : "Not focused"}</div>
   <div>Session focus: {focusPercent}%</div>
   <div>Distractions: {distractions}</div>
-  <div>
-    Head turned: {headTurned ? "yes" : "no"} • Eyes off-screen:{" "}
-    {eyesOffScreen ? "yes" : "no"}
-  </div>
+  <div>Head turned: {headTurned ? "yes" : "no"}</div>
   <div>Alerting: {displayNotFocused ? "YES (beeping)" : "no"}</div>
 </div>
 
