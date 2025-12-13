@@ -411,6 +411,7 @@ function SurveyResultsPage({ results, onBack }) {
     if (results.length === 0) return;
     const data = results.map(r => ({
       "Subject": r.session.subject,
+      "Session Time (min, SYSTEM)": r.session?.actualMinutes ?? "",
       "Focus % (SYSTEM)": r.session?.focusPercent ?? "",
       "Distractions (SYSTEM)": r.session?.distractions ?? "",
       "Alert Beep Enabled (SYSTEM)": r.session?.wantsAlerts === false ? "No" : "Yes",
