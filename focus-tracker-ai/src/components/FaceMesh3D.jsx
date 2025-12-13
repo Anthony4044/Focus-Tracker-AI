@@ -4,7 +4,7 @@ import "@tensorflow/tfjs-backend-webgl";
 import * as faceLandmarksDetection from "@tensorflow-models/face-landmarks-detection";
 import * as THREE from "three";
 
-export default function FaceMesh3D() {
+export default function FaceMesh3D({ onStatsChange, alertEnabled = true }) {
   const containerRef = useRef(null);
   const videoRef = useRef(null);
 
@@ -100,8 +100,8 @@ export default function FaceMesh3D() {
 
   // start / stop continuous beeps based on focus/face
   useEffect(() => {
-    // "Alert" state: either not focused OR no face visible
-    const shouldAlert = !isFocused || facesCount === 0;
+    // "Alert" state: either not focused OR no face visible (and alerts enabled)
+    const shouldAlert = alertEnabled && (!isFocused || facesCount === 0);
 
     if (shouldAlert) {
       if (!beepIntervalRef.current) {
@@ -123,7 +123,7 @@ export default function FaceMesh3D() {
         beepIntervalRef.current = null;
       }
     };
-  }, [isFocused, facesCount]);
+  }, [isFocused, facesCount, alertEnabled]);
 
   // clean up audio context on unmount
   useEffect(() => {
@@ -682,6 +682,12 @@ export default function FaceMesh3D() {
       setFocusPercent(Math.round((stats.focusedMs / stats.totalMs) * 100));
     }
   }, [offScreen, facesCount, headTurned, eyesOffScreen]);
+
+  useEffect(() => {
+    if (typeof onStatsChange === "function") {
+      onStatsChange({ focusPercent, distractions });
+    }
+  }, [focusPercent, distractions, onStatsChange]);
 
   // ----------- derived UI state: what to show as "not focused" ----------
   const displayNotFocused = !isFocused || facesCount === 0;

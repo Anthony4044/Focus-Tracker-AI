@@ -90,6 +90,7 @@ function PreSessionForm({ onBack, onStart }) {
   const [goal, setGoal] = useState("");
   const [durationInput, setDurationInput] = useState("60");
   const [wantsBackgroundAudio, setWantsBackgroundAudio] = useState(true);
+  const [wantsAlerts, setWantsAlerts] = useState(true);
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -99,6 +100,7 @@ function PreSessionForm({ onBack, onStart }) {
       goal: goal.trim() || "No specific goal",
       durationMinutes: minutes,
       wantsBackgroundAudio,
+      wantsAlerts,
     });
   };
 
@@ -169,6 +171,27 @@ function PreSessionForm({ onBack, onStart }) {
                 </button>
               </div>
             </div>
+
+            <div className="form-field">
+              <label>Alert beeps when distracted?</label>
+              <div className="toggle-row">
+                <button
+                  type="button"
+                  className={"chip " + (wantsAlerts ? "chip-active" : "")}
+                  onClick={() => setWantsAlerts(true)}
+                >
+                  Enable alerts
+                </button>
+                <button
+                  type="button"
+                  className={"chip " + (!wantsAlerts ? "chip-active" : "")}
+                  onClick={() => setWantsAlerts(false)}
+                >
+                  Disable alerts
+                </button>
+              </div>
+              <p className="muted-text" style={{ margin: 0 }}>When off, the system will not play the alert beep.</p>
+            </div>
           </div>
 
           <div className="form-actions">
@@ -208,6 +231,13 @@ function ProfilePage({ userName, sessions, onBack }) {
                       : "Duration not recorded"}{" "}
                     · Planned {s.durationMinutes} min · {new Date(s.startedAt).toLocaleString()}
                   </div>
+                  <div className="profile-meta">
+                    Focus: {s.focusPercent != null ? `${s.focusPercent}%` : "Not recorded"} | Distractions:{" "}
+                    {s.distractions != null ? s.distractions : "Not recorded"}
+                  </div>
+                  <div className="profile-meta">
+                    Alert beep: {s.wantsAlerts === false ? "Disabled" : "Enabled"}
+                  </div>
                 </div>
                 <div className="profile-goal">{s.goal}</div>
               </li>
@@ -225,7 +255,7 @@ function ProfilePage({ userName, sessions, onBack }) {
 
 /* ---------- SESSION PAGE ---------- */
 
-function SessionPage({ config, onEndSession, soundMuted, onToggleMute, userName }) {
+function SessionPage({ config, onEndSession, soundMuted, onToggleMute, userName, onMetricsUpdate, metrics }) {
   const rainAudioRef = useRef(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
@@ -283,9 +313,12 @@ function SessionPage({ config, onEndSession, soundMuted, onToggleMute, userName 
             <p><strong>Goal:</strong> {config.goal}</p>
             <p><strong>Planned duration:</strong> {config.durationMinutes} min</p>
             <p><strong>Timer:</strong> {formatTime(elapsedSeconds)}</p>
+            <p><strong>Focus (live):</strong> {metrics?.focusPercent != null ? `${metrics.focusPercent}%` : "Collecting..."}</p>
+            <p><strong>Distractions:</strong> {metrics?.distractions != null ? metrics.distractions : "Collecting..."}</p>
+            <p><strong>Alert beeps:</strong> {config.wantsAlerts ? "On" : "Off"}</p>
             <p><strong>Background audio:</strong> {config.wantsBackgroundAudio ? "Yes" : "No"} ({soundMuted ? "Muted" : "On"})</p>
           </aside>
-          <main className="session-main"><FaceMesh3D /></main>
+          <main className="session-main"><FaceMesh3D onStatsChange={onMetricsUpdate} alertEnabled={config.wantsAlerts} /></main>
         </div>
       </div>
     </div>
@@ -378,6 +411,9 @@ function SurveyResultsPage({ results, onBack }) {
     if (results.length === 0) return;
     const data = results.map(r => ({
       "Subject": r.session.subject,
+      "Focus % (SYSTEM)": r.session?.focusPercent ?? "",
+      "Distractions (SYSTEM)": r.session?.distractions ?? "",
+      "Alert Beep Enabled (SYSTEM)": r.session?.wantsAlerts === false ? "No" : "Yes",
       "Focus Level": r.focusLevel,
       "Distraction Level": r.distractionFeel,
       "Distraction Source": r.distractionSource,
@@ -446,11 +482,13 @@ export default function App() {
   const [backgroundMuted, setBackgroundMuted] = useState(false);
   const [lastCompleted, setLastCompleted] = useState(null);
   const [surveyResults, setSurveyResults] = useState([]);
+  const [sessionMetrics, setSessionMetrics] = useState({ focusPercent: null, distractions: null });
 
   const handleLogin = (name) => { setUserName(name); setView("home"); };
 
   const handlePreSessionStart = (config) => {
     const sessionConfig = { ...config, startedAt: new Date().toISOString() };
+    setSessionMetrics({ focusPercent: null, distractions: null });
     setCurrentConfig(sessionConfig);
     setBackgroundMuted(!config.wantsBackgroundAudio);
     setView("session");
@@ -461,7 +499,13 @@ export default function App() {
     const startMs = new Date(currentConfig.startedAt).getTime();
     const endMs = Date.now();
     const actualMinutes = Math.round((endMs - startMs) / 60000);
-    const completedSession = { ...currentConfig, endedAt: new Date(endMs).toISOString(), actualMinutes };
+    const completedSession = {
+      ...currentConfig,
+      endedAt: new Date(endMs).toISOString(),
+      actualMinutes,
+      focusPercent: sessionMetrics.focusPercent ?? 0,
+      distractions: sessionMetrics.distractions ?? 0,
+    };
     setPastSessions(prev => [...prev, completedSession]);
     setLastCompleted(completedSession);
     setCurrentConfig(null);
@@ -488,6 +532,8 @@ export default function App() {
       userName={userName}
       soundMuted={backgroundMuted}
       onToggleMute={() => setBackgroundMuted(v => !v)}
+      onMetricsUpdate={setSessionMetrics}
+      metrics={sessionMetrics}
       onEndSession={handleEndSession}
     />;
     case "profile": return <ProfilePage userName={userName} sessions={pastSessions} onBack={() => setView("home")} />;
