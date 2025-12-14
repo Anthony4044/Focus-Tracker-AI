@@ -1,9 +1,14 @@
 
 :root {
   --ink: #0f172a;
-  --muted: #4b5563;
-  --surface: rgba(255, 255, 255, 0.9);
-  --border: #e5e7eb;
+  --muted: #20252d;
+--surface: linear-gradient(
+  160deg,
+  rgb(161, 166, 221) 0%,
+  rgba(226, 240, 255, 0.85) 60%,
+  rgb(7, 39, 59) 100%
+);
+  --border: rgb(7, 39, 59);
   --accent: #0ea5e9;
   --accent-2: #6366f1;
   --danger: #ef4444;
@@ -14,7 +19,7 @@
 }
 
 .app-root {
-  min-height: 100vh;
+  min-height: 80vh;
   display: grid;
   place-items: center;
   padding: 32px 18px;
@@ -23,6 +28,7 @@
     radial-gradient(120% 120% at 88% 0%, rgba(14, 165, 233, 0.12), transparent 40%),
     linear-gradient(180deg, #f9fafb 0%, #eef1f7 100%);
 }
+
 
 .session-card {
   width: min(780px, 100%);

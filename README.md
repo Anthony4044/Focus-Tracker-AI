@@ -14,6 +14,7 @@ A React + Vite app that uses TensorFlow.js FaceMesh and Three.js to render live 
 ```
 npm install
 npm install xlsx file-saver
+npm install react-tsparticles tsparticles tsparticles-slim
 ```
 
 ## Run (development)

@@ -4,6 +4,7 @@ import FaceMesh3D from "./components/FaceMesh3D.jsx";
 import "./css/App.css";
 import * as XLSX from "xlsx";
 import { saveAs } from "file-saver";
+import MovingBackground from "./components/MovingBackground.jsx";
 
 /* ---------- Small helper: parse duration string ---------- */
 function parseDurationToMinutes(value) {
@@ -33,6 +34,7 @@ function LoginPage({ onLogin }) {
 
   return (
     <div className="app-root">
+  <MovingBackground />
       <div className="session-card auth-card">
         <h1 className="session-title">Welcome to Focus Tracker AI</h1>
         <p className="session-description">
@@ -63,6 +65,7 @@ function LoginPage({ onLogin }) {
 function HomePage({ userName, onStartSessionClick, onProfileClick, onSurveyResultsClick }) {
   return (
     <div className="app-root">
+  <MovingBackground />
       <div className="session-card">
         <h1 className="session-title">Hi {userName}, ready to focus?</h1>
         <p className="session-description">
@@ -106,6 +109,7 @@ function PreSessionForm({ onBack, onStart }) {
 
   return (
     <div className="app-root">
+  <MovingBackground />
       <div className="session-card">
         <h1 className="session-title">Session setup</h1>
         <p className="session-description">
@@ -370,6 +374,7 @@ function GazeCalibrationPage({ config, onCancel, onComplete }) {
 function ProfilePage({ userName, sessions, onBack }) {
   return (
     <div className="app-root">
+  <MovingBackground />
       <div className="session-card">
         <h1 className="session-title">{userName}&apos;s sessions</h1>
         <p className="session-description">
@@ -451,6 +456,7 @@ function SessionPage({ config, onEndSession, soundMuted, onToggleMute, userName,
 
   return (
     <div className="app-root">
+  <MovingBackground />
       <div className="session-running">
         <div className="session-running-header">
           <div className="session-running-text">
@@ -517,6 +523,7 @@ function SurveyPage({ lastSession, onSubmit }) {
 
   return (
     <div className="app-root">
+  <MovingBackground />
       <div className="session-card">
         <h1 className="session-title">Session Survey</h1>
         <form className="form-grid" onSubmit={handleSubmit}>
@@ -648,6 +655,7 @@ function SurveyResultsPage({ results, onBack }) {
 
    return (
     <div className="app-root">
+  <MovingBackground />
       <div className="session-card">
         <h1 className="session-title">Survey Results</h1>
         <button className="btn btn-primary" onClick={exportToExcel} style={{marginBottom:"1rem"}}>Export to Excel</button>
