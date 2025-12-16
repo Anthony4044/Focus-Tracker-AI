@@ -52,3 +52,7 @@ Dev:
 - If the camera feed is black or permission is denied, check site permissions for the origin.
 - If landmarks don’t appear or performance is low, make sure hardware acceleration is enabled (WebGL).
 - If running in a restricted network, allow access to jsDelivr for WebGazer and MediaPipe assets, or replace CDN usage with locally hosted files.
+
+## Demo Video
+
+https://drive.google.com/file/d/12t-8YXQoQLWAn5t_DqjunbGmmqsFS_Dm/view?usp=sharing
